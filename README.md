@@ -12,7 +12,7 @@ mainly used under Linux
 # backup your config first
 # mv ~/.config/kitty  ~/.config/kitty.bak
 
-git clone https://github.com/ttys3/my-kitty-config.git ~/.config/kitty
+git clone https://github.com/ttys3/oh-my-kitty.git ~/.config/kitty
 ```
 
 ## suggested shell alias
