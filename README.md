@@ -1,4 +1,4 @@
-# my-kitty-config
+# Oh my kitty!
 
 the kitty config for tmux users
 
