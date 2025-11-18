@@ -6,6 +6,20 @@ the shortcuts (key bindings) is heavily inspired by [Oh my tmux!](https://github
 
 mainly used under Linux
 
+## new features
+
+### session support
+
+kitty >= 0.43 finally support session save and allow you to switch between sessions.
+
+we now support save current session to the session file via single keypress <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>s</kbd>.
+
+TODO: more session management features like:
+1. switch between sessions
+2. delete session
+3. rename session
+4. list sessions
+
 ## usage
 
 ```shell
@@ -114,37 +128,15 @@ press `ctrl` + `a` in the same time, release and then, press R (`shift`+`r`)
 
 ## session restore
 
-> if you have used <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>s</kbd> generate the session, you do not need this.
+this config has been enabled by default in this config.
 
-you can create your session file under `~/.config/kitty`, let's say the filename is `session.conf`
+you can use <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>s</kbd> to save the current session to the session file.
 
-change `startup_session none` to `startup_session session.conf`
+which will save the current session to the session file under `~/.config/kitty/session.conf`
 
-create `session.conf` like this:
+> kitty has long had support for [Sessions](https://sw.kovidgoyal.net/kitty/sessions/), aka simple text files where you can define what tabs, windows and programs you wish to run in kitty. Now in addition to that kitty has the ability to [create and switch between sessions](https://sw.kovidgoyal.net/kitty/sessions/#goto-session) with a single keypress and 
+> also to manually setup some tabs/windows in kitty and [save it as a session file](https://sw.kovidgoyal.net/kitty/sessions/#complex-sessions), for seamless and intuitive session file creation.
 
-```ini
-new_tab home
-layout splits
-cd ~
-launch zsh
-focus
-
-new_tab work
-cd ~/work
-launch zsh
-
-new_tab nvim
-cd ~/.config/nvim
-launch zsh
-
-new_tab go
-cd ~/repo/go
-launch zsh
-
-new_tab rust
-cd ~/repo/rust
-launch zsh
-```
 
 ## kitty docs
 
