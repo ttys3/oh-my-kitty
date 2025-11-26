@@ -14,6 +14,12 @@ kitty >= 0.43 finally support session save and allow you to switch between sessi
 
 we now support save current session to the session file via single keypress <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>s</kbd>.
 
+you 'll need to create a default session file for the first time.
+
+```shell
+touch ~/.config/kitty/default.kitty-session
+```
+
 TODO: more session management features like:
 1. switch between sessions
 2. delete session
@@ -27,6 +33,8 @@ TODO: more session management features like:
 # mv ~/.config/kitty  ~/.config/kitty.bak
 
 git clone https://github.com/ttys3/oh-my-kitty.git ~/.config/kitty
+
+touch ~/.config/kitty/default.kitty-session # create a default session file
 ```
 
 ## suggested shell alias
