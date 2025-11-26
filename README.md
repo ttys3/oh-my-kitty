@@ -154,19 +154,40 @@ The launch command syntax reference <https://sw.kovidgoyal.net/kitty/launch/#syn
 
 ## troubleshooting
 
-the behavior of `listen_on` differs from the behavior of `--listen-on` cli flag.
+kitty ask me where to save the session file?
 
-the cli one is exactly the same.
+you can just create a empty file for the first time:
 
-the config file one will append a random postfix to the socket name, this is strange logic.
-
-start kitty:
-```
-kitty -o allow_remote_control=yes --listen-on unix:/run/user/1000/kitty.sock
+```shell
+touch ~/.config/kitty/default.kitty-session
 ```
 
-on other terminal:
+and then you can use <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>s</kbd> to save the current session to the session file, it will not ask you again.
 
+## fonts
+
+### macOS
+
+macOS user fonts is under `~/Library/Fonts`
+
+Iosevka Term is a good font for terminal, you can install it via:
+
+```shell
+brew install --cask font-iosevka-term-nerd-font
 ```
- kitty @ --to unix:/run/user/1000/kitty.sock launch --type=tab --cwd "/tmp" --tab-title "My Tab" --keep-focus bash
+
+Iosevka is a good font for coding, you can install it via:
+
+```shell
+brew install --cask font-iosevka
 ```
+
+Lilex is a good font for coding, you can install it via:
+
+```shell
+brew install --cask font-lilex
+```
+
+### Linux
+
+donwload and put the fonts to `~/.local/share/fonts` then run `fc-cache -f -v` to refresh the font cache.
