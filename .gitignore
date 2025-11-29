@@ -1,3 +1,4 @@
 /session.conf
 /default.kitty-session
 /kitty.conf.bak
+/*.local.conf
