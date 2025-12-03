@@ -37,6 +37,33 @@ git clone https://github.com/ttys3/oh-my-kitty.git ~/.config/kitty
 touch ~/.config/kitty/default.kitty-session # create a default session file
 ```
 
+## customization
+
+### override default config
+
+You can override any default settings by creating a local config file: `${USER}.local.conf` (e.g., `ttys3.local.conf` if your username is `ttys3`).
+
+This file is automatically included at the end of `kitty.conf`, so any settings in it will override the defaults. This allows you to customize your kitty configuration without modifying the main config file, making it easier to update the base config.
+
+**Example: Override font family and size**
+
+Create `~/.config/kitty/${USER}.local.conf` (replace `${USER}` with your actual username):
+
+```conf
+# Override font settings
+font_family Lilex
+font_size 13.0
+```
+
+You can override any kitty setting in this file. Common customizations include:
+- `font_family` - Change the font
+- `font_size` - Adjust font size
+- `background_opacity` - Set transparency
+- `background_image` - Set background image
+- And any other kitty configuration option
+
+After creating or modifying `${USER}.local.conf`, reload the config with <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>R</kbd> or restart kitty.
+
 ## suggested shell alias
 
 ```shell
