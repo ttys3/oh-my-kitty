@@ -69,6 +69,16 @@ except Exception:
         return len(s)
 
 try:
+    # Grapheme-cluster splitter (flags/keycaps/ZWJ/VS16 emoji collapse to one
+    # cluster). kitty's wcswidth is grapheme-aware, so width must be measured on
+    # whole clusters, not codepoints. Fallback: per-codepoint (old buggy width,
+    # but never crashes on an older kitty without this symbol).
+    from kitty.fast_data_types import split_into_graphemes as _split_graphemes
+except Exception:
+    def _split_graphemes(s: str) -> list[str]:
+        return list(s)
+
+try:
     from kittens.tui.operations import styled as _styled
 except Exception:
     def _styled(text: str, **kw: Any) -> str:
@@ -156,21 +166,27 @@ def _proc(w: dict[str, Any]) -> str:
 
 
 def _truncate(text: str, width: int) -> str:
+    """Truncate to `width` display columns (grapheme-cluster aware), appending
+    '…' when cut. Iterates whole graphemes so a flag/keycap/ZWJ/VS16 emoji is
+    kept or dropped atomically and the result's display width matches the
+    terminal (and _visible_width/_pad). A per-codepoint wcswidth loop is wrong
+    here: kitty's wcswidth collapses multi-codepoint graphemes, so summing
+    codepoints over-counts flags/ZWJ and under-counts keycaps."""
     if width <= 0:
         return ''
     if _wcswidth(text) <= width:
         return text
     out: list[str] = []
     w = 0
-    for ch in text:
-        cw = _wcswidth(ch)
-        if cw < 0:
-            cw = 0
-        if w + cw > width - 1:
+    for g in _split_graphemes(text):
+        gw = _wcswidth(g)
+        if gw < 0:
+            gw = 0
+        if w + gw > width - 1:
             out.append('…')
             break
-        out.append(ch)
-        w += cw
+        out.append(g)
+        w += gw
     return ''.join(out)
 
 
@@ -210,39 +226,46 @@ def _sgr_truncate(line: str, width: int) -> str:
     """Truncate an SGR-annotated line to `width` display columns.
 
     SGR sequences (\x1b[…m) pass through verbatim and cost 0 columns; printable
-    chars cost _wcswidth (CJK == 2). Stops before exceeding width with no
-    ellipsis (fills a cell edge-to-edge); a wide char straddling the boundary is
-    dropped so the visible width is always <= width. Appends a reset when any
-    SGR was emitted, so color never bleeds past the cut or into a border."""
+    text is measured/cut by whole grapheme clusters (CJK == 2; a flag/keycap/
+    ZWJ/VS16 emoji is kept or dropped atomically, never split). Stops before
+    exceeding width with no ellipsis (fills a cell edge-to-edge); a cluster
+    straddling the boundary is dropped so the visible width is always <= width
+    and matches the terminal. A per-codepoint loop is wrong here: kitty's
+    wcswidth is grapheme-aware, so summing codepoints over-counts flags/ZWJ and
+    under-counts keycaps, which used to overflow or split a cell (misaligned
+    borders). Appends a reset when any SGR was emitted, so color never bleeds
+    past the cut or into a border."""
     if width <= 0:
         return ''
     out: list[str] = []
     w = 0
     saw_sgr = False
-    i = 0
-    n = len(line)
-    while i < n:
-        ch = line[i]
-        if ch == '\x1b' and i + 1 < n and line[i + 1] == '[':
-            j = i + 2
-            while j < n and line[j] in '0123456789;:':
-                j += 1
-            if j < n and line[j] == 'm':
-                out.append(line[i:j + 1])
-                saw_sgr = True
-                i = j + 1
-                continue
-            # malformed / non-SGR CSI: skip the lone ESC as a 0-width control
-            i += 1
-            continue
-        cw = _wcswidth(ch)
-        if cw < 0:
-            cw = 0
-        if w + cw > width:
+    pos = 0
+    done = False
+
+    def take(seg: str) -> bool:
+        """Consume seg grapheme-by-grapheme; return True when width is hit."""
+        nonlocal w
+        for g in _split_graphemes(seg):
+            gw = _wcswidth(g)
+            if gw < 0:
+                gw = 0
+            if w + gw > width:
+                return True
+            out.append(g)
+            w += gw
+        return False
+
+    # SGR codes are 0-width and pass through; the text between them is measured.
+    for m in _SGR_RE.finditer(line):
+        if take(line[pos:m.start()]):
+            done = True
             break
-        out.append(ch)
-        w += cw
-        i += 1
+        out.append(m.group())
+        saw_sgr = True
+        pos = m.end()
+    if not done:
+        take(line[pos:])
     if saw_sgr:
         out.append('\x1b[0m')
     return ''.join(out)
