@@ -21,6 +21,12 @@ Visual style (tunable constants below):
   - The current tab's header is highlighted with CURRENT_TAB_COLOR.
   - Tab separator style is chosen by TAB_SEPARATOR: bar/rule/reverse/
     underline/none.
+  - Preview pane (SHOW_PREVIEW): the box splits into list (top) + a live
+    preview grid (bottom) showing every window in the selected window's tab
+    as a bordered cell (content via `kitty @ get-text`), the selected one
+    highlighted. Cells lay out left-to-right and wrap to more rows when
+    narrow; a single-window tab fills the pane with one cell. The box falls
+    back to a pure list when too short (PREVIEW_RATIO / *_MIN_ROWS / CELL_*).
 
 Auto-maximize (AUTO_MAXIMIZE): an overlay's size always equals the active
   window, so triggering from a small split renders a tiny box. On open, if
@@ -48,6 +54,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from math import ceil
 from typing import Any
 
 from kitty.boss import Boss
@@ -95,6 +103,35 @@ TAB_SEPARATOR = 'bar'
 # Accent color for the current tab's header ('' to disable). A color name
 # 'green'/'cyan'/'yellow' or a 0-255 number.
 CURRENT_TAB_COLOR = 'green'
+
+# ── Preview pane (tmux choose-tree style) ───────────────────────────────
+# Split the modal box into list (top) + preview (bottom). The preview shows a
+# live grid of EVERY window in the selected window's TAB: each window is a
+# bordered cell laid out left-to-right (wrapping to more rows when too narrow),
+# the currently selected window highlighted. A tab with a single window degrades
+# to one big cell (== a plain single-window preview). The list stays
+# window-level: Up/Down still selects/jumps a window and just drives which cell
+# is highlighted; moving to another tab swaps the whole grid.
+SHOW_PREVIEW = True
+# Preview content comes from `kitty @ get-text --extent screen` on each window
+# (verified to return only SGR color codes with --ansi; no cursor moves/OSC).
+PREVIEW_ANSI = True       # True: keep colors (SGR); False: plain text (always safe)
+# Fraction of the (list + preview) body given to the preview. The grid is dense,
+# so it defaults to half. 0.0 disables effectively (list keeps everything).
+PREVIEW_RATIO = 0.5
+# Degradation floors: only draw a preview when the list keeps >= LIST_MIN_ROWS
+# AND the preview gets >= PREVIEW_MIN_ROWS (one row of bordered cells needs 4);
+# otherwise the box silently falls back to a pure list (no divider, no crash).
+LIST_MIN_ROWS = 3
+PREVIEW_MIN_ROWS = 4
+# Per-window cell geometry inside the grid. A cell narrower than CELL_MIN_W
+# triggers a wrap to more rows; CELL_MIN_H is the min cell height (2 border rows
+# + >=2 content rows); CELL_GAP is the blank columns between cells.
+CELL_MIN_W = 16
+CELL_MIN_H = 4
+CELL_GAP = 1
+# Divider glyph between the list and the preview grid.
+PREVIEW_DIVIDER = '─'
 
 
 def _shorten_cwd(cwd: str) -> str:
@@ -149,6 +186,115 @@ def _pad(text: str, width: int) -> str:
     """Truncate + right-pad to display width (CJK aware)."""
     text = _truncate(text, width)
     return text + ' ' * max(0, width - _wcswidth(text))
+
+
+# ── Preview pure helpers (no kitty deps beyond _wcswidth/_styled; testable) ──
+# `get-text --ansi` (verified live) emits only SGR (\x1b[…m) and occasionally
+# OSC (hyperlinks/titles). We strip OSC and keep SGR, truncating SGR-aware.
+_OSC_RE = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+_SGR_RE = re.compile(r'\x1b\[[0-9;:]*m')
+
+
+def _strip_osc(s: str) -> str:
+    """Drop OSC sequences (hyperlinks \x1b]8;…, titles \x1b]0;…); tolerate both
+    BEL and ST (\x1b\\) terminators. SGR color codes are left untouched."""
+    return _OSC_RE.sub('', s)
+
+
+def _visible_width(s: str) -> int:
+    """Display width of an SGR-annotated string (SGR sequences count 0)."""
+    return _wcswidth(_SGR_RE.sub('', s))
+
+
+def _sgr_truncate(line: str, width: int) -> str:
+    """Truncate an SGR-annotated line to `width` display columns.
+
+    SGR sequences (\x1b[…m) pass through verbatim and cost 0 columns; printable
+    chars cost _wcswidth (CJK == 2). Stops before exceeding width with no
+    ellipsis (fills a cell edge-to-edge); a wide char straddling the boundary is
+    dropped so the visible width is always <= width. Appends a reset when any
+    SGR was emitted, so color never bleeds past the cut or into a border."""
+    if width <= 0:
+        return ''
+    out: list[str] = []
+    w = 0
+    saw_sgr = False
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch == '\x1b' and i + 1 < n and line[i + 1] == '[':
+            j = i + 2
+            while j < n and line[j] in '0123456789;:':
+                j += 1
+            if j < n and line[j] == 'm':
+                out.append(line[i:j + 1])
+                saw_sgr = True
+                i = j + 1
+                continue
+            # malformed / non-SGR CSI: skip the lone ESC as a 0-width control
+            i += 1
+            continue
+        cw = _wcswidth(ch)
+        if cw < 0:
+            cw = 0
+        if w + cw > width:
+            break
+        out.append(ch)
+        w += cw
+        i += 1
+    if saw_sgr:
+        out.append('\x1b[0m')
+    return ''.join(out)
+
+
+def _grid_dims(n: int, inner: int, ph: int) -> tuple[int, int, int, int, int]:
+    """Lay out n window cells in an inner×ph area. Returns
+    (cols, rows, cell_w, cell_h, cap). Prefers a single row (cells side by
+    side); wraps to more rows when cells would be narrower than CELL_MIN_W;
+    caps rows by height (CELL_MIN_H). A hard floor keeps cells renderable
+    (>= ~3 cols). cap == cols*rows cells fit; a caller with n>cap marks the
+    overflow."""
+    n = max(1, n)
+    rows_cap = max(1, ph // CELL_MIN_H)
+    per_row = max(1, (inner + CELL_GAP) // (CELL_MIN_W + CELL_GAP))
+    rows = min(rows_cap, ceil(n / per_row))
+    cols = ceil(n / rows)
+    max_cols = max(1, (inner + CELL_GAP) // (3 + CELL_GAP))  # keep cell_w >= ~3
+    cols = min(cols, max_cols)
+    cell_w = (inner - (cols - 1) * CELL_GAP) // cols
+    cell_h = ph // rows
+    return cols, rows, cell_w, cell_h, cols * rows
+
+
+def _render_cell(title: str, lines: list[str], w: int, h: int, selected: bool) -> list[str]:
+    """Render one window as a bordered cell: h strings, each visible width == w
+    (SGR-aware). Row 0 is ┌title…┐, rows 1..h-2 are │content│, the last is
+    └────┘. Selected cells get an accent border + title; others a dim border.
+    Content keeps the window's own colors, SGR-truncated to the inner width and
+    padded with default-bg spaces (so no color bleeds into the borders)."""
+    if w < 2 or h < 1:
+        return [' ' * max(0, w) for _ in range(max(0, h))]
+    fg = CURRENT_TAB_COLOR if (selected and CURRENT_TAB_COLOR) else None
+    bstyle: dict[str, Any] = {'fg': fg, 'bold': True} if selected else {'dim': True}
+    tstyle: dict[str, Any] = {'fg': fg, 'bold': True} if selected else {}
+    iw = w - 2  # inner content width
+    rows: list[str] = []
+    label = _truncate(title, iw) if iw > 0 else ''
+    fill = max(0, iw - _wcswidth(label))
+    rows.append(_styled('┌', **bstyle) + _styled(label, **tstyle)
+                + _styled('─' * fill + '┐', **bstyle))
+    for k in range(max(0, h - 2)):
+        raw = lines[k] if k < len(lines) else ''
+        if iw > 0:
+            t = _sgr_truncate(raw, iw)
+            content = t + ' ' * max(0, iw - _visible_width(t))
+        else:
+            content = ''
+        rows.append(_styled('│', **bstyle) + content + _styled('│', **bstyle))
+    if h >= 2:
+        rows.append(_styled('└' + '─' * iw + '┘', **bstyle))
+    return rows[:h]
 
 
 def _active_tab_info(tree: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -220,6 +366,27 @@ def _build_items(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
+def _get_text(wid: int, ansi: bool) -> list[str]:
+    """Capture window `wid`'s current screen via `kitty @ get-text`, returning
+    OSC-stripped lines (SGR kept iff ansi). [] on any failure -> blank cell.
+    `main` is the module-level KittenUI; its rc_fd is ready once main() runs."""
+    cmd = ['get-text', '--match', 'id:%d' % wid, '--extent', 'screen']
+    if ansi:
+        cmd.append('--ansi')
+    try:
+        cp = main.remote_control(cmd, capture_output=True)
+    except Exception:
+        return []
+    if getattr(cp, 'returncode', 1) != 0:
+        return []
+    raw = getattr(cp, 'stdout', b'') or b''
+    text = raw.decode('utf-8', 'replace') if isinstance(raw, (bytes, bytearray)) else str(raw)
+    lines = _strip_osc(text).split('\n')
+    if lines and lines[-1] == '':
+        lines.pop()
+    return lines
+
+
 class ChooseTree(Handler):
 
     def __init__(self, items: list[dict[str, Any]]):
@@ -229,6 +396,16 @@ class ChooseTree(Handler):
         self.top = 0
         self.result: int | None = None
         self.cur = next((i for i, it in enumerate(items) if it['is_focused']), 0)
+        # wid -> OSC-stripped preview lines (pre-truncation; re-fit on resize).
+        self.preview_cache: dict[int, list[str]] = {}
+
+    def _preview_lines(self, wid: int) -> list[str]:
+        """Cached per-window preview lines; one get-text round-trip per wid."""
+        raw = self.preview_cache.get(wid)
+        if raw is None:
+            raw = _get_text(wid, PREVIEW_ANSI)
+            self.preview_cache[wid] = raw
+        return raw
 
     def initialize(self) -> None:
         self.cmd.set_cursor_visible(False)
@@ -298,6 +475,8 @@ class ChooseTree(Handler):
         rows: list[str] = []
         rows.append(_styled(_pad('Search: ' + self.query + '▏', inner), bold=True))
         info = '%d/%d · ↑↓ ^n^p move · Enter jump · Esc cancel' % (len(self.filtered), len(self.items))
+        if SHOW_PREVIEW:
+            info += ' · ^r refresh'
         rows.append(_styled(_pad(info, inner), dim=True))
         flat = self._flat_display()
         sel = next((k for k, row in enumerate(flat) if row[0] == self.cur), 0)
@@ -319,6 +498,83 @@ class ChooseTree(Handler):
             rows.append(' ' * inner)
         return rows[:2 + list_h]
 
+    def _split_body(self, avail: int) -> tuple[int, int]:
+        """Divide the body height into (list_h, preview_h). preview_h == 0 means
+        no preview/divider (pure list). Only splits when the list keeps
+        LIST_MIN_ROWS and the preview gets PREVIEW_MIN_ROWS after one divider
+        row; otherwise degrades to a pure list."""
+        if not SHOW_PREVIEW or avail < LIST_MIN_ROWS + 1 + PREVIEW_MIN_ROWS:
+            return max(1, avail), 0
+        usable = avail - 1  # one row for the divider
+        preview = max(PREVIEW_MIN_ROWS, round(usable * PREVIEW_RATIO))
+        list_h = usable - preview
+        if list_h < LIST_MIN_ROWS:
+            list_h = LIST_MIN_ROWS
+            preview = usable - list_h
+        if preview < PREVIEW_MIN_ROWS:
+            return max(1, avail), 0
+        return list_h, preview
+
+    def _render_divider(self, inner: int) -> str:
+        """A dim titled rule between the list and the preview, naming the tab
+        being previewed. Width is exactly inner (borders stay aligned)."""
+        it = self.filtered[self.cur] if self.filtered else None
+        if it:
+            label = ' tab %d: %d window%s%s ' % (
+                it['tab_idx'] + 1, it['tab_nwin'], '' if it['tab_nwin'] == 1 else 's',
+                (' (%s)' % it['tab_layout']) if it['tab_layout'] else '')
+        else:
+            label = ' preview '
+        lead = PREVIEW_DIVIDER * 2
+        label = _truncate(label, max(0, inner - _wcswidth(lead)))
+        fill = max(0, inner - _wcswidth(lead) - _wcswidth(label))
+        return _styled(lead + label + PREVIEW_DIVIDER * fill, dim=True)
+
+    def _render_preview(self, inner: int, preview_h: int) -> list[str]:
+        """Render the selected window's tab as a grid of bordered window cells,
+        the current selection highlighted. Returns exactly preview_h rows, each
+        of display width inner."""
+        blank = [' ' * inner for _ in range(preview_h)]
+        if not self.filtered:
+            return blank
+        cur = self.filtered[self.cur]
+        sel_id = cur['id']
+        # every window of the selected window's tab, in ls order (from items, not
+        # filtered: preview the whole tab even while the list is filtered)
+        wins = [it for it in self.items
+                if it['osw_idx'] == cur['osw_idx'] and it['tab_idx'] == cur['tab_idx']]
+        if not wins:
+            return blank
+        n = len(wins)
+        cols, rows, cell_w, cell_h, cap = _grid_dims(n, inner, preview_h)
+        shown = wins[:cap]
+        overflow = n - len(shown)
+        body_h = max(0, cell_h - 2)
+        cells: list[list[str]] = []
+        for idx, it in enumerate(shown):
+            title = 'win%d %s' % (idx + 1, it['proc'] or it['title'] or '?')
+            if overflow and idx == len(shown) - 1:
+                title = '+%d more · %s' % (overflow, title)
+            content = self._preview_lines(it['id'])
+            if body_h and len(content) > body_h:
+                content = content[-body_h:]  # tail: prompt / latest output
+            cells.append(_render_cell(title, content, cell_w, cell_h, it['id'] == sel_id))
+        gap = ' ' * CELL_GAP
+        out: list[str] = []
+        for r in range(rows):
+            row_cells = cells[r * cols:(r + 1) * cols]
+            if not row_cells:
+                break
+            for k in range(cell_h):
+                pieces = [c[k] if k < len(c) else ' ' * cell_w for c in row_cells]
+                line = gap.join(pieces)
+                line += ' ' * max(0, inner - _visible_width(line))
+                out.append(line)
+        out = out[:preview_h]
+        while len(out) < preview_h:
+            out.append(' ' * inner)
+        return out
+
     def draw(self) -> None:
         self.cmd.clear_screen()
         rows, cols = self.screen_size.rows, self.screen_size.cols
@@ -328,8 +584,12 @@ class ChooseTree(Handler):
         my = max(0, (rows - bh) // 2)
         left = ' ' * mx
         inner = bw - 2
-        list_h = max(1, bh - 4)  # minus border (2) minus search/info (2)
+        avail = max(1, bh - 4)  # minus border (2) minus search/info (2)
+        list_h, preview_h = self._split_body(avail)
         body = self._render_rows(inner, list_h)
+        if preview_h > 0:
+            body.append(self._render_divider(inner))
+            body.extend(self._render_preview(inner, preview_h))
         bar = _styled('│', dim=True)
         out: list[str] = ['' for _ in range(my)]
         title = '─ choose-tree '
@@ -380,6 +640,14 @@ class ChooseTree(Handler):
                 self.query = self.query[:-1]
                 self.refilter()
                 self.draw()
+        elif key_event.matches('ctrl+r'):
+            # invalidate the previewed tab's window caches, then redraw (re-fetch)
+            if self.filtered:
+                cur = self.filtered[self.cur]
+                for it in self.items:
+                    if it['osw_idx'] == cur['osw_idx'] and it['tab_idx'] == cur['tab_idx']:
+                        self.preview_cache.pop(it['id'], None)
+            self.draw()
 
     def on_interrupt(self) -> None:
         self.quit_loop(1)
