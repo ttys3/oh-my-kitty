@@ -205,8 +205,9 @@ def _pad(text: str, width: int) -> str:
 
 
 # ── Preview pure helpers (no kitty deps beyond _wcswidth/_styled; testable) ──
-# `get-text --ansi` (verified live) emits only SGR (\x1b[…m) and occasionally
-# OSC (hyperlinks/titles). We strip OSC and keep SGR, truncating SGR-aware.
+# `get-text --ansi` (verified live) emits SGR (\x1b[…m), occasionally OSC
+# (hyperlinks/titles), and literal TABs (e.g. git status output). We strip OSC,
+# keep SGR (truncating SGR-aware), and expand TABs (see _expand_tabs).
 _OSC_RE = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
 _SGR_RE = re.compile(r'\x1b\[[0-9;:]*m')
 
@@ -220,6 +221,46 @@ def _strip_osc(s: str) -> str:
 def _visible_width(s: str) -> int:
     """Display width of an SGR-annotated string (SGR sequences count 0)."""
     return _wcswidth(_SGR_RE.sub('', s))
+
+
+def _expand_tabs(s: str, tabstop: int = 8) -> str:
+    """Expand TABs to spaces, measured in *visible* columns from the line's own
+    column 0 (SGR sequences are 0-width and pass through untouched).
+
+    `get-text --ansi` returns the literal '\\t' a program emitted (e.g. the TAB
+    `git status` puts before each untracked file), not the spaces the source
+    screen actually showed. Re-printing that '\\t' inside a preview cell — which
+    starts at some column offset, not column 0 — makes the terminal re-expand it
+    to a different tab stop, so the cell's right border lands in the wrong column
+    (the staircased borders this fixes). wcswidth can't model "advance to the
+    next tab stop" either, so the padding is mis-counted too and the desync hides
+    from every width check (they all go through wcswidth). Expanding once here,
+    at capture, relative to the source line's column 0, reproduces what the
+    source window displayed and makes all downstream width math exact."""
+    if '\t' not in s:
+        return s
+    out: list[str] = []
+    col = 0
+
+    def emit(seg: str) -> None:
+        nonlocal col
+        for g in _split_graphemes(seg):
+            if g == '\t':
+                spaces = tabstop - (col % tabstop)
+                out.append(' ' * spaces)
+                col += spaces
+            else:
+                gw = _wcswidth(g)
+                out.append(g)
+                col += gw if gw > 0 else 0
+
+    pos = 0
+    for m in _SGR_RE.finditer(s):
+        emit(s[pos:m.start()])
+        out.append(m.group())
+        pos = m.end()
+    emit(s[pos:])
+    return ''.join(out)
 
 
 def _sgr_truncate(line: str, width: int) -> str:
@@ -407,7 +448,7 @@ def _get_text(wid: int, ansi: bool) -> list[str]:
     lines = _strip_osc(text).split('\n')
     if lines and lines[-1] == '':
         lines.pop()
-    return lines
+    return [_expand_tabs(ln) for ln in lines]
 
 
 class ChooseTree(Handler):
