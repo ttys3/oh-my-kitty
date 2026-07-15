@@ -41,16 +41,28 @@ touch ~/.config/kitty/default.kitty-session # create a default session file
 
 ### override default config
 
-You can override any default settings by creating a local config file: `${USER}.local.conf` (e.g., `ttys3.local.conf` if your username is `ttys3`).
+> ⚠️ **Breaking change:** the local override file was renamed from the per-user
+> `${USER}.local.conf` (e.g. `alice.local.conf`) to a fixed name **`my.local.conf`**, and it
+> is now pulled in with `globinclude` instead of `include`. If you already had a
+> `${USER}.local.conf`, rename it after pulling this update — otherwise your overrides
+> **silently stop loading** (`globinclude` skips the missing old file without any warning):
+>
+> ```shell
+> mv ~/.config/kitty/${USER}.local.conf ~/.config/kitty/my.local.conf
+> ```
 
-This file is automatically included at the end of `kitty.conf`, so any settings in it will override the defaults. This allows you to customize your kitty configuration without modifying the main config file, making it easier to update the base config.
+You can override any default setting in a git-ignored local config file: **`my.local.conf`**. It is pulled in at the end of `kitty.conf` via `globinclude my.local.conf`, so any settings in it override the defaults — letting you customize kitty without touching the tracked config, which keeps the base config easy to update. Because it uses `globinclude`, kitty silently skips the file when it does not exist, so creating it is optional.
+
+A tracked template `my.local.conf.example` ships with the repo — copy it to get started:
+
+```shell
+cp ~/.config/kitty/my.local.conf.example ~/.config/kitty/my.local.conf
+```
 
 **Example: Override font family and size**
 
-Create `~/.config/kitty/${USER}.local.conf` (replace `${USER}` with your actual username):
-
 ```conf
-# Override font settings
+# ~/.config/kitty/my.local.conf
 font_family Lilex
 font_size 13.0
 ```
@@ -62,7 +74,7 @@ You can override any kitty setting in this file. Common customizations include:
 - `background_image` - Set background image
 - And any other kitty configuration option
 
-After creating or modifying `${USER}.local.conf`, reload the config with <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>R</kbd> or restart kitty.
+After creating or modifying `my.local.conf`, reload the config with <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>R</kbd> or restart kitty.
 
 ## suggested shell alias
 

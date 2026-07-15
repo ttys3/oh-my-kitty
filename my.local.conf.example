@@ -1,0 +1,15 @@
+# my.local.conf.example — machine-local kitty overrides (template)
+#
+# Copy this file to `my.local.conf` (gitignored) and uncomment what you want:
+#
+#   cp my.local.conf.example my.local.conf
+#
+# kitty.conf pulls it in last via `globinclude my.local.conf`, so any binding here
+# overrides the defaults. globinclude silently skips the file when it does not exist,
+# so leaving my.local.conf uncreated is fine.
+
+# --- close_window confirmation --------------------------------------------------------
+# kitty.conf defaults to always confirming (y/n) before ctrl+a>x closes a window.
+# Uncomment to instead confirm only when a program is still running, i.e. skip the
+# prompt at an idle shell prompt (relies on shell_integration, which is enabled):
+# map ctrl+a>x close_window_with_confirmation ignore-shell
