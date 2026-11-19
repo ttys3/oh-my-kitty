@@ -76,6 +76,59 @@ You can override any kitty setting in this file. Common customizations include:
 
 After creating or modifying `my.local.conf`, reload the config with <kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>R</kbd> or restart kitty.
 
+### per-OS config (opt-in)
+
+Not enabled by default. When you share one config between Linux and macOS but some
+settings must differ per platform, pull in a per-OS file from your `my.local.conf`:
+
+```conf
+# ~/.config/kitty/my.local.conf
+include ${KITTY_OS}.local.conf
+```
+
+When processing `include`, kitty expands `${KITTY_OS}` to `linux`, `macos` or `bsd`, so this
+loads `linux.local.conf` or `macos.local.conf` (relative to the config dir). Both match the
+`/*.local.conf` rule in `.gitignore`, so they stay machine-local like `my.local.conf`.
+
+**Example: remote control socket**
+
+`kitty.conf` already sets `allow_remote_control yes`, but without `listen_on` the
+`kitty @` commands only work from inside a kitty window. With a socket you can also
+control kitty from outside, e.g. `kitty @ --to <socket> ls` to find the window that
+runs a given process, then `focus-window --match id:<N>`. The socket syntax differs
+per OS, which is exactly what the per-OS file is for:
+
+```conf
+# ~/.config/kitty/linux.local.conf
+# Abstract UNIX socket: lives in the kernel, not on disk, so nothing is left behind
+# and it is easy to find: grep kitty /proc/net/unix
+# Note: it has no file permissions — any process in the same network namespace can
+# connect to it.
+listen_on unix:@kitty
+```
+
+```conf
+# ~/.config/kitty/macos.local.conf
+# macOS has no abstract sockets: `unix:@kitty` starts fine but silently never listens.
+# Use a file socket instead. A relative path is resolved against $TMPDIR, i.e.
+# /var/folders/…/T/ (per-user, mode 700).
+listen_on unix:kitty
+```
+
+When `listen_on` is set in the config file, kitty appends `-<kitty_pid>` to the socket name, so the
+actual address is `unix:@kitty-<pid>` on Linux and `unix:$TMPDIR/kitty-<pid>` on macOS.
+Inside a kitty window it is exported as `$KITTY_LISTEN_ON`:
+
+```shell
+# Linux
+kitty @ --to unix:@kitty-$(pgrep -xo kitty) ls
+# macOS
+kitty @ --to unix:$(ls "$TMPDIR"kitty-* | head -1) ls
+```
+
+`listen_on` is read only at startup: reloading the config does not open the socket, so
+restart kitty after adding it.
+
 ## suggested shell alias
 
 ```shell
