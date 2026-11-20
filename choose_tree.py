@@ -18,7 +18,10 @@ Visual style (tunable constants below):
     title, which duplicates the window row. So when the tab title matches
     the active window it shows only `tab N (layout, k win)`; only a custom
     (set_tab_title) title that differs from the window is shown.
-  - The current tab's header is highlighted with CURRENT_TAB_COLOR.
+  - Per-tab colors (TAB_PALETTE): each tab gets a rotating ANSI color for its
+    header and a left gutter ▎ on its window rows; the current tab's header
+    is a full-width band in that color. With TAB_PALETTE = () the current
+    tab's header is highlighted with CURRENT_TAB_COLOR instead.
   - Tab separator style is chosen by TAB_SEPARATOR: bar/rule/reverse/
     underline/none.
   - Preview pane (SHOW_PREVIEW): the box splits into list (top) + a live
@@ -113,6 +116,13 @@ TAB_SEPARATOR = 'bar'
 # Accent color for the current tab's header ('' to disable). A color name
 # 'green'/'cyan'/'yellow' or a 0-255 number.
 CURRENT_TAB_COLOR = 'green'
+
+# Per-tab color palette, cycled in tab order (stable while filtering). Uses the
+# 16 ANSI color names so it still follows the theme. Each tab's header (bar +
+# title + rule to the box edge) and a left gutter ▎ on its window rows get the
+# tab's color; the current tab's header becomes a full-width band in its color.
+# Empty tuple () disables it (falls back to TAB_SEPARATOR + CURRENT_TAB_COLOR).
+TAB_PALETTE: tuple[str | int, ...] = ('blue', 'magenta', 'cyan', 'yellow', 'green', 'red')
 
 # ── Preview pane (tmux choose-tree style) ───────────────────────────────
 # Split the modal box into list (top) + preview (bottom). The preview shows a
@@ -455,6 +465,7 @@ class ChooseTree(Handler):
 
     def __init__(self, items: list[dict[str, Any]]):
         self.items = items
+        self._tab_order: dict[tuple[int, int], int] | None = None
         self.filtered = list(items)
         self.query = ''
         self.top = 0
@@ -486,16 +497,29 @@ class ChooseTree(Handler):
         self.cur = next((i for i, it in enumerate(self.filtered) if it['id'] == keep_id), 0)
         self.cur = max(0, min(self.cur, len(self.filtered) - 1)) if self.filtered else 0
 
-    def _flat_display(self) -> list[tuple[int | None, bool, str, str, bool]]:
+    def _tab_color(self, it: dict[str, Any]) -> str | int | None:
+        """Palette color of the item's tab, indexed by the tab's order in the
+        unfiltered list so a tab keeps its color while filtering."""
+        if not TAB_PALETTE:
+            return None
+        if self._tab_order is None:
+            order: dict[tuple[int, int], int] = {}
+            for x in self.items:
+                order.setdefault((x['osw_idx'], x['tab_idx']), len(order))
+            self._tab_order = order
+        k = self._tab_order.get((it['osw_idx'], it['tab_idx']), 0)
+        return TAB_PALETTE[k % len(TAB_PALETTE)]
+
+    def _flat_display(self) -> list[tuple[int | None, bool, str, str, bool, str | int | None]]:
         """Flatten into display rows: (window row index or None, is group header,
-        head, tail, is current tab)."""
-        out: list[tuple[int | None, bool, str, str, bool]] = []
+        head, tail, is current tab, tab palette color or None)."""
+        out: list[tuple[int | None, bool, str, str, bool, str | int | None]] = []
         multi = bool(self.items and self.items[0]['multi_osw'])
         last_osw: int | None = None
         last_group: tuple[int, int] | None = None
         for i, it in enumerate(self.filtered):
             if multi and it['osw_idx'] != last_osw:
-                out.append((None, True, 'OS window %d' % (it['osw_idx'] + 1), '', False))
+                out.append((None, True, 'OS window %d' % (it['osw_idx'] + 1), '', False, None))
                 last_osw = it['osw_idx']
             g = (it['osw_idx'], it['tab_idx'])
             if g != last_group:
@@ -504,17 +528,26 @@ class ChooseTree(Handler):
                         it['tab_idx'] + 1, it['tab_display_title'], it['tab_layout'], it['tab_nwin'])
                 else:
                     head = 'tab %d  (%s, %d win)' % (it['tab_idx'] + 1, it['tab_layout'], it['tab_nwin'])
-                out.append((None, True, head, '', it['tab_is_current']))
+                out.append((None, True, head, '', it['tab_is_current'], self._tab_color(it)))
                 last_group = g
             marker = '●' if it['is_focused'] else ('○' if it['is_active'] else ' ')
             head = ' %s %s' % (marker, it['title'] or '(no title)')
             tail = '  ·  %s  ·  %s' % (it['proc'], it['cwd'])
-            out.append((i, False, head, tail, False))
+            out.append((i, False, head, tail, False, self._tab_color(it)))
         return out
 
-    def _render_group(self, head: str, is_current: bool, inner: int) -> str:
+    def _render_group(self, head: str, is_current: bool, inner: int,
+                      color: str | int | None = None) -> str:
         """Render one group header row per TAB_SEPARATOR (width always = inner,
-        so the box borders stay aligned)."""
+        so the box borders stay aligned). A palette `color` overrides the
+        separator style: current tab = full-width band, others = colored
+        bar + title + rule to the edge."""
+        if color is not None:
+            if is_current:
+                return _styled(_pad('▌ ' + head + '  ◀ current', inner), fg=color, reverse=True, bold=True)
+            label = _truncate('▌ ' + head + ' ', inner)
+            fillw = max(0, inner - _wcswidth(label))
+            return _styled(label, fg=color, bold=True) + (_styled('─' * fillw, fg=color, dim=True) if fillw else '')
         fg = CURRENT_TAB_COLOR if (is_current and CURRENT_TAB_COLOR) else None
         sep = TAB_SEPARATOR
         if sep == 'reverse':
@@ -549,9 +582,19 @@ class ChooseTree(Handler):
         elif sel >= self.top + list_h:
             self.top = sel - list_h + 1
         self.top = max(0, min(self.top, max(0, len(flat) - list_h)))
-        for idx, is_group, head, tail, is_current in flat[self.top:self.top + list_h]:
+        for idx, is_group, head, tail, is_current, color in flat[self.top:self.top + list_h]:
             if is_group:
-                rows.append(self._render_group(head, is_current, inner))
+                rows.append(self._render_group(head, is_current, inner, color))
+            elif color is not None:
+                # head starts with a space: swap it for the tab's colored gutter.
+                gutter = _styled('▎', fg=color)
+                body_w = inner - 1
+                if idx == self.cur:
+                    rows.append(gutter + _styled(_pad(head[1:] + tail, body_w), reverse=True))
+                else:
+                    h2, t2 = _truncate_pair(head[1:], tail, body_w)
+                    fillw = max(0, body_w - _wcswidth(h2) - _wcswidth(t2))
+                    rows.append(gutter + h2 + (_styled(t2 + ' ' * fillw, dim=True) if (t2 or fillw) else ''))
             elif idx == self.cur:
                 rows.append(_styled(_pad(head + tail, inner), reverse=True))
             else:
