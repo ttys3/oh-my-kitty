@@ -210,6 +210,28 @@ press `ctrl` + `a` in the same time, release and then, press R (`shift`+`r`)
 | <kbd>alt</kbd>+<kbd>d</kbd>                                 | resize window shorter        |
 | <kbd>ctrl</kbd>+<kbd>home</kbd>                             | resize window reset          |
 
+### choose tree
+
+<kbd>ctrl</kbd>+<kbd>a</kbd>><kbd>w</kbd> opens a tmux-style picker ([`choose_tree.py`](choose_tree.py)): every OS window → tab → window with its title, foreground program and cwd, plus a live preview of all windows in the selected tab. Type to filter.
+
+| key                                                                    | description                     |
+| ---------------------------------------------------------------------- | ------------------------------- |
+| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>ctrl</kbd>+<kbd>p</kbd> <kbd>ctrl</kbd>+<kbd>n</kbd> | move the selection              |
+| <kbd>page up</kbd> <kbd>page down</kbd> / <kbd>home</kbd> <kbd>end</kbd> | move by a page / to the first or last window |
+| <kbd>enter</kbd>                                                       | jump to the selected window     |
+| <kbd>esc</kbd> / <kbd>ctrl</kbd>+<kbd>c</kbd> / <kbd>ctrl</kbd>+<kbd>g</kbd> | cancel                          |
+| <kbd>ctrl</kbd>+<kbd>r</kbd>                                           | refresh the preview of the selected tab |
+
+Each tab gets its own color from `TAB_PALETTE` (set at the top of `choose_tree.py`), assigned in tab order and kept while filtering: the tab header (`▌` + title + a rule to the box edge) and a `▎` gutter on each of its window rows. The current tab's header starts with `▶` and has a heavy `━` rule.
+
+```python
+TAB_PALETTE = ('blue', 'magenta', 'cyan', 'yellow', 'green', 'red')  # default
+TAB_PALETTE = (12, 13, 14)  # bright blue / magenta / cyan
+TAB_PALETTE = ()            # no per-tab colors: use TAB_SEPARATOR + CURRENT_TAB_COLOR
+```
+
+A color is one of `black` `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `white` (ANSI 0–7) or a 0–255 index (8–15 are the bright variants). Names and 0–15 come from the theme, so they change with it. Other names such as `bright_blue` or `purple` are ignored and listed in the picker's info line.
+
 ### scrollback
 
 The last 30000 lines of each window scroll in place; older lines are kept as plain text (up to 64 MiB per window) and are only reachable through the pager. Scrollback costs `columns × 32 bytes` per line whatever it contains, so a large `scrollback_lines` across many long-lived windows adds up to GiBs.
