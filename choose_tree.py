@@ -11,19 +11,18 @@ Visual style (tunable constants below):
     current window, but only draws a rounded box in the centered
     BOX_W_RATIO×BOX_H_RATIO area (kitty is tiling, there is no native
     floating window; the modal look is done by drawing inside the overlay).
-  - Theme-following minimal: reverse selection, ● focus marker, dim for
-    secondary info/borders; no hardcoded colors, uses the terminal's
-    default foreground throughout.
+  - Theme-following: reverse selection, ● focus marker, dim for secondary
+    info/borders. The only colors are ANSI palette indices (TAB_PALETTE /
+    CURRENT_TAB_COLOR), so they still follow the terminal theme.
   - Tab title dedupe: kitty's tab title defaults to the active window's
     title, which duplicates the window row. So when the tab title matches
     the active window it shows only `tab N (layout, k win)`; only a custom
     (set_tab_title) title that differs from the window is shown.
   - Per-tab colors (TAB_PALETTE): each tab gets a rotating ANSI color for its
     header and a left gutter ▎ on its window rows; the current tab's header
-    is a full-width band in that color. With TAB_PALETTE = () the current
-    tab's header is highlighted with CURRENT_TAB_COLOR instead.
-  - Tab separator style is chosen by TAB_SEPARATOR: bar/rule/reverse/
-    underline/none.
+    starts with ▶ and uses a heavy rule ━. With TAB_PALETTE = () tab headers
+    use TAB_SEPARATOR (bar/rule/reverse/underline/none) and the current one
+    is highlighted with CURRENT_TAB_COLOR.
   - Preview pane (SHOW_PREVIEW): the box splits into list (top) + a live
     preview grid (bottom) showing every window in the selected window's tab
     as a bordered cell (content via `kitty @ get-text`), the selected one
@@ -104,7 +103,8 @@ BOX_H_RATIO = 0.8
 # close. Set to False to disable.
 AUTO_MAXIMIZE = True
 
-# Tab separator style (change this one line and re-test live in kitty):
+# Tab separator style. Only used for tab headers when TAB_PALETTE = ()
+# (always used for the 'OS window N' headers):
 #   'bar'       leading vertical bar ▌ (cleanest)
 #   'rule'      title + dim rule extending to the box edge (strong now that
 #               titles are deduped and short)
@@ -113,16 +113,46 @@ AUTO_MAXIMIZE = True
 #   'none'      bold title only
 TAB_SEPARATOR = 'bar'
 
-# Accent color for the current tab's header ('' to disable). A color name
-# 'green'/'cyan'/'yellow' or a 0-255 number.
+# Accent color for the current tab's header ('' to disable); only used when
+# TAB_PALETTE = (). Same color syntax as TAB_PALETTE.
 CURRENT_TAB_COLOR = 'green'
 
-# Per-tab color palette, cycled in tab order (stable while filtering). Uses the
-# 16 ANSI color names so it still follows the theme. Each tab's header (bar +
-# title + rule to the box edge) and a left gutter ▎ on its window rows get the
-# tab's color; the current tab's header becomes a full-width band in its color.
-# Empty tuple () disables it (falls back to TAB_SEPARATOR + CURRENT_TAB_COLOR).
+# Per-tab color palette, cycled in tab order (stable while filtering). Each
+# tab's header (bar + title + rule to the box edge) and a left gutter ▎ on its
+# window rows get the tab's color; the current tab's header starts with ▶ and
+# uses a heavy rule ━. Empty tuple () disables it (falls back to
+# TAB_SEPARATOR + CURRENT_TAB_COLOR).
+# Colors: kitty's names black/red/green/yellow/blue/magenta/cyan/gray/white
+# (ANSI 0-7) or a 0-255 index (8-15 = bright variants, e.g. 12 = bright blue).
+# Anything else ('bright_blue', 'purple', ...) is dropped and reported in the
+# info line instead of crashing the kitten.
 TAB_PALETTE: tuple[str | int, ...] = ('blue', 'magenta', 'cyan', 'yellow', 'green', 'red')
+
+try:
+    from kittens.tui.operations import STANDARD_COLORS as _COLOR_NAMES
+except Exception:
+    _COLOR_NAMES = {'black': 0, 'red': 1, 'green': 2, 'yellow': 3, 'blue': 4,
+                    'magenta': 5, 'cyan': 6, 'gray': 7, 'white': 7}
+
+
+def _valid_color(c: Any) -> bool:
+    """True if kitty's styled() accepts c as fg/bg (a known name or 0-255)."""
+    if isinstance(c, bool):
+        return False
+    if isinstance(c, int):
+        return 0 <= c <= 255
+    return isinstance(c, str) and c in _COLOR_NAMES
+
+
+# Invalid color config values, shown in the info line.
+_BAD_COLORS: list[str] = [repr(c) for c in TAB_PALETTE if not _valid_color(c)]
+_TAB_COLORS: tuple[str | int, ...] = tuple(c for c in TAB_PALETTE if _valid_color(c))
+_CURRENT_TAB_COLOR: str | int | None = None
+if CURRENT_TAB_COLOR != '':
+    if _valid_color(CURRENT_TAB_COLOR):
+        _CURRENT_TAB_COLOR = CURRENT_TAB_COLOR
+    else:
+        _BAD_COLORS.append(repr(CURRENT_TAB_COLOR))
 
 # ── Preview pane (tmux choose-tree style) ───────────────────────────────
 # Split the modal box into list (top) + preview (bottom). The preview shows a
@@ -349,7 +379,7 @@ def _render_cell(title: str, lines: list[str], w: int, h: int, selected: bool) -
     padded with default-bg spaces (so no color bleeds into the borders)."""
     if w < 2 or h < 1:
         return [' ' * max(0, w) for _ in range(max(0, h))]
-    fg = CURRENT_TAB_COLOR if (selected and CURRENT_TAB_COLOR) else None
+    fg = _CURRENT_TAB_COLOR if selected else None
     bstyle: dict[str, Any] = {'fg': fg, 'bold': True} if selected else {'dim': True}
     tstyle: dict[str, Any] = {'fg': fg, 'bold': True} if selected else {}
     iw = w - 2  # inner content width
@@ -500,7 +530,7 @@ class ChooseTree(Handler):
     def _tab_color(self, it: dict[str, Any]) -> str | int | None:
         """Palette color of the item's tab, indexed by the tab's order in the
         unfiltered list so a tab keeps its color while filtering."""
-        if not TAB_PALETTE:
+        if not _TAB_COLORS:
             return None
         if self._tab_order is None:
             order: dict[tuple[int, int], int] = {}
@@ -508,7 +538,7 @@ class ChooseTree(Handler):
                 order.setdefault((x['osw_idx'], x['tab_idx']), len(order))
             self._tab_order = order
         k = self._tab_order.get((it['osw_idx'], it['tab_idx']), 0)
-        return TAB_PALETTE[k % len(TAB_PALETTE)]
+        return _TAB_COLORS[k % len(_TAB_COLORS)]
 
     def _flat_display(self) -> list[tuple[int | None, bool, str, str, bool, str | int | None]]:
         """Flatten into display rows: (window row index or None, is group header,
@@ -540,15 +570,16 @@ class ChooseTree(Handler):
                       color: str | int | None = None) -> str:
         """Render one group header row per TAB_SEPARATOR (width always = inner,
         so the box borders stay aligned). A palette `color` overrides the
-        separator style: current tab = full-width band, others = colored
-        bar + title + rule to the edge."""
+        separator style: colored bar + title + rule to the edge; the current
+        tab gets a leading ▶ (survives truncation) and a heavy, non-dim rule.
+        No reverse video here, so it never competes with the selected row."""
         if color is not None:
-            if is_current:
-                return _styled(_pad('▌ ' + head + '  ◀ current', inner), fg=color, reverse=True, bold=True)
-            label = _truncate('▌ ' + head + ' ', inner)
+            mark, ruler = ('▶ ', '━') if is_current else ('▌ ', '─')
+            label = _truncate(mark + head + ' ', inner)
             fillw = max(0, inner - _wcswidth(label))
-            return _styled(label, fg=color, bold=True) + (_styled('─' * fillw, fg=color, dim=True) if fillw else '')
-        fg = CURRENT_TAB_COLOR if (is_current and CURRENT_TAB_COLOR) else None
+            rule = _styled(ruler * fillw, fg=color, dim=None if is_current else True) if fillw else ''
+            return _styled(label, fg=color, bold=True) + rule
+        fg = _CURRENT_TAB_COLOR if is_current else None
         sep = TAB_SEPARATOR
         if sep == 'reverse':
             return _styled(_pad(head, inner), reverse=True, bold=True, fg=fg)
@@ -574,6 +605,8 @@ class ChooseTree(Handler):
         info = '%d/%d · ↑↓ ^n^p move · Enter jump · Esc cancel' % (len(self.filtered), len(self.items))
         if SHOW_PREVIEW:
             info += ' · ^r refresh'
+        if _BAD_COLORS:
+            info = 'bad color %s ignored · ' % ', '.join(_BAD_COLORS) + info
         rows.append(_styled(_pad(info, inner), dim=True))
         flat = self._flat_display()
         sel = next((k for k, row in enumerate(flat) if row[0] == self.cur), 0)
@@ -585,7 +618,7 @@ class ChooseTree(Handler):
         for idx, is_group, head, tail, is_current, color in flat[self.top:self.top + list_h]:
             if is_group:
                 rows.append(self._render_group(head, is_current, inner, color))
-            elif color is not None:
+            elif color is not None and inner >= 2:
                 # head starts with a space: swap it for the tab's colored gutter.
                 gutter = _styled('▎', fg=color)
                 body_w = inner - 1
