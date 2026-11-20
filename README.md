@@ -210,6 +210,15 @@ press `ctrl` + `a` in the same time, release and then, press R (`shift`+`r`)
 | <kbd>alt</kbd>+<kbd>d</kbd>                                 | resize window shorter        |
 | <kbd>ctrl</kbd>+<kbd>home</kbd>                             | resize window reset          |
 
+### scrollback
+
+The last 30000 lines of each window scroll in place; older lines are kept as plain text (up to 64 MiB per window) and are only reachable through the pager. Scrollback costs `columns × 32 bytes` per line whatever it contains, so a large `scrollback_lines` across many long-lived windows adds up to GiBs.
+
+| key                                                                         | description                                                                                                 |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>h</kbd>                               | browse the full history (scrollback + pager history) in `less`, opened at the current position; the wheel scrolls |
+| <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>l</kbd>                | clear the current window's scrollback and free its RAM; an overlay shows the lines cleared and kitty's memory before → after (Linux) |
+
 ### font
 
 | key                          | description     |
